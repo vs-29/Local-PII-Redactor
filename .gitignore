@@ -1,0 +1,8 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+# outputs that may contain PII
+*.redacted.txt
+*map*.json
+redaction_audit.jsonl
