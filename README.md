@@ -244,7 +244,10 @@ Things this project taught me, often by hitting the bug first:
 
 **LLMs**
 - Use structured output (a JSON schema in Ollama's `format`) plus `temperature: 0` for repeatable, parseable answers.
-- Never trust model output blindly: check every string against the source text.
+- Never trust model output blindly: check every string against the source text. In testing, the model returned "Apollo Hospital" and "Pune" from the *prompt's example* for text that contained neither, and the guard dropped them.
+- Long input is split into overlapping chunks (`chunk_text`). The model is asked about each chunk, and every value it returns is then searched for in the *full* text, so no offset arithmetic is needed.
+- Always cap the output length (`num_predict`). A 1.5B model got stuck repeating `"vendor contracts"` and, without a cap, ran past the 120 s timeout. That looked like a long-document problem, but it was a repetition loop.
+- Measure before you fix: the timeout was first blamed on length, and logging `eval_count` and `done_reason` per chunk showed the real cause.
 
 **CLI and Windows**
 - `argparse` with `nargs="?"` on an option can swallow the next argument. An earlier `--audit notes.txt` appended the log *into the input file*. The fix was to split it into a flag (`--audit`) and a path (`--audit-file`), and a test now covers it.
@@ -268,7 +271,8 @@ Things this project taught me, often by hitting the bug first:
 - **Detection is not perfect.** Small LLMs and spaCy miss some names, especially non-English ones. Check the output with `--show`.
 - **LLM matches are case-sensitive.** If the model returns `Priya`, a lowercase `priya` elsewhere is not redacted.
 - **Every whole-word occurrence of an LLM-found value is redacted**, e.g. every "Pune". That is safe, but it can over-redact.
-- **No chunking yet.** Very long documents are sent to the LLM in one request.
+- **Small models can get stuck repeating themselves**, especially on repetitive text. Replies are capped (`max_output_tokens`) and the complete items are kept, but names in that chunk can be missed. In a 29k-character test, 8 of 10 names were found. A larger model (`--model`) helps.
+- **The LLM also over-flags**: on business text, `qwen2.5:1.5b` sometimes labels ordinary words ("budgets") as JOB_TITLE, and every occurrence then gets redacted.
 - **NER is English-only** with `en_core_web_sm`.
 - `score` is recorded but not yet used when merging (only span length and source priority are).
 
@@ -281,7 +285,7 @@ cd pii-redactor
 python -m unittest -v
 ```
 
-15 tests cover the regex patterns and checksums, the LLM hallucination guard, overlap merging, tag consistency and `restore()`, mask mode, and the audit log never containing raw values. Ollama and spaCy are not needed, because the LLM is replaced by a fake detector.
+22 tests cover the regex patterns and checksums, the LLM hallucination guard, chunking and cut-off replies, overlap merging, tag consistency and `restore()`, mask mode, and the audit log never containing raw values. Ollama and spaCy are not needed, because the LLM is replaced by a fake detector.
 
 ---
 
@@ -289,7 +293,7 @@ python -m unittest -v
 
 - [ ] `review_app.py`: a person approves or rejects detections before export
 - [ ] `evals/run_eval.py`: precision and recall against a labelled sample set
-- [ ] Chunking for long documents sent to the LLM
+- [x] Chunking for long documents sent to the LLM
 - [ ] Case-insensitive matching for LLM-found values
 - [ ] Use `score` to resolve conflicts, and add a confidence threshold option
 - [ ] A `requirements.txt` / `pyproject.toml` for the optional extras
