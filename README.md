@@ -247,6 +247,8 @@ Things this project taught me, often by hitting the bug first:
 - Never trust model output blindly: check every string against the source text. In testing, the model returned "Apollo Hospital" and "Pune" from the *prompt's example* for text that contained neither, and the guard dropped them.
 - Long input is split into overlapping chunks (`chunk_text`). The model is asked about each chunk, and every value it returns is then searched for in the *full* text, so no offset arithmetic is needed.
 - Always cap the output length (`num_predict`). A 1.5B model got stuck repeating `"vendor contracts"` and, without a cap, ran past the 120 s timeout. That looked like a long-document problem, but it was a repetition loop.
+- "Will" the person vs "will" the verb is a **part-of-speech** question. spaCy's tagger (`token.pos_`) answers it from the sentence: "Ask **Will**" → PROPN, "**Will** you…" → AUX. The model's exact spelling is always redacted, and the tagger only decides the *extra* case variants, so it can add redactions but never remove one.
+- Taggers are context-dependent and imperfect: lowercase "priya" was PROPN in one sentence and NOUN in the next, and "Thanks, WILL" came out as AUX. When unsure, choose the rule that over-redacts.
 - Measure before you fix: the timeout was first blamed on length, and logging `eval_count` and `done_reason` per chunk showed the real cause.
 
 **CLI and Windows**
@@ -269,7 +271,8 @@ Things this project taught me, often by hitting the bug first:
 ## Limitations
 
 - **Detection is not perfect.** Small LLMs and spaCy miss some names, especially non-English ones. Check the output with `--show`.
-- **LLM matches are case-sensitive.** If the model returns `Priya`, a lowercase `priya` elsewhere is not redacted.
+- **Case variants lean toward over-redaction.** If the model returns `Will` (a person), the exact spelling is redacted everywhere, including "Will you…?". ALL-CAPS variants are always redacted ("I WILL CALL"). With spaCy, a common noun that matches a name ("hope" when the model found "Hope") is also redacted. Without spaCy, lowercase variants are skipped.
+- **All spellings share one tag**: `Priya`, `priya` and `PRIYA` all become `[PERSON_1]`, so an AI tool sees one person. `result.restore()` still returns the exact original, but `restore(answer)` puts back a single spelling, preferring the normal one (`Priya`) over all-lowercase or ALL-CAPS.
 - **Every whole-word occurrence of an LLM-found value is redacted**, e.g. every "Pune". That is safe, but it can over-redact.
 - **Small models can get stuck repeating themselves**, especially on repetitive text. Replies are capped (`max_output_tokens`) and the complete items are kept, but names in that chunk can be missed. In a 29k-character test, 8 of 10 names were found. A larger model (`--model`) helps.
 - **The LLM also over-flags**: on business text, `qwen2.5:1.5b` sometimes labels ordinary words ("budgets") as JOB_TITLE, and every occurrence then gets redacted.
@@ -285,7 +288,7 @@ cd pii-redactor
 python -m unittest -v
 ```
 
-24 tests cover the regex patterns and checksums, the LLM hallucination guard, chunking and cut-off replies, overlap merging, tag consistency and `restore()`, mask mode, and the audit log never containing raw values. Ollama and spaCy are not needed, because the LLM is replaced by a fake detector.
+39 tests cover the regex patterns and checksums, the LLM hallucination guard, chunking and cut-off replies, case-variant matching (the spaCy ones are skipped if spaCy isn't installed), overlap merging, tag consistency and `restore()`, mask mode, and the audit log never containing raw values. Ollama and spaCy are not needed, because the LLM is replaced by a fake detector.
 
 ---
 
@@ -294,7 +297,7 @@ python -m unittest -v
 - [ ] `review_app.py`: a person approves or rejects detections before export
 - [ ] `evals/run_eval.py`: precision and recall against a labelled sample set
 - [x] Chunking for long documents sent to the LLM
-- [ ] Case-insensitive matching for LLM-found values
+- [x] Case-variant matching for LLM-found values, with a part-of-speech check
 - [x] Use `score` to resolve conflicts
 - [ ] A confidence threshold option
 - [ ] A `requirements.txt` / `pyproject.toml` for the optional extras

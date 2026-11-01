@@ -30,8 +30,13 @@ class RedactionResult:
     mapping: dict = field(default_factory=dict)   # tag -> original text
 
     def restore(self, text: str = None) -> str:
-        """Put the original values back (e.g. into an LLM's answer)."""
-        text = self.redacted if text is None else text
+        """Put the original values back (e.g. into an LLM's answer).
+
+        With no argument this returns the exact original. For other text each tag
+        becomes one spelling, so "priya" and "PRIYA" both come back as "Priya".
+        """
+        if text is None:
+            return self.original
         # Tags end with ']' so [PERSON_1] can never match inside [PERSON_10].
         # Sorting just makes the replacement order predictable.
         for tag in sorted(self.mapping, key=len, reverse=True):

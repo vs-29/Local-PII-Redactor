@@ -33,13 +33,16 @@ class Pipeline:
     @classmethod
     def default(cls, use_llm=True, use_ner=True, **llm_kwargs):
         """Regex always; NER if spaCy is installed; LLM if requested."""
-        detectors = [RegexDetector()]
+        detectors, ner = [RegexDetector()], None
         if use_ner:
             from .detectors.ner_detector import NERDetector
             if NERDetector.available():
-                detectors.append(NERDetector())
+                ner = NERDetector()
+                detectors.append(ner)
         if use_llm:
             from .detectors.llm_detector import LLMDetector
+            if ner:   # spaCy's part-of-speech tags decide "Will" (name) vs "will" (verb)
+                llm_kwargs.setdefault("variant_check", ner.is_name_like)
             detectors.append(LLMDetector(**llm_kwargs))
         return cls(detectors)
 

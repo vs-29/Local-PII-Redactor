@@ -57,13 +57,23 @@ def parse_entities(reply: str) -> list:
         return [i for i in items if isinstance(i, dict)]
 
 
-def find_spans(text: str, needle: str):
+def find_spans(text: str, needle: str, ignore_case: bool = False):
     """All whole-word occurrences of needle in text, as (start, end).
 
     Whole-word matching stops "Ravi" from hitting inside "Ravindra".
     """
     pattern = r"(?<!\w)" + re.escape(needle) + r"(?!\w)"
-    return [m.span() for m in re.finditer(pattern, text)]
+    flags = re.IGNORECASE if ignore_case else 0
+    return [m.span() for m in re.finditer(pattern, text, flags)]
+
+
+def looks_like_name(text: str, start: int, end: int) -> bool:
+    """Fallback check for a case variant when spaCy isn't available.
+
+    Title Case or ALL CAPS ("PRIYA" in a signature) yes, lowercase ("will") no.
+    """
+    word = text[start:end]
+    return word.istitle() or word.isupper()
 
 
 def chunk_text(text: str, max_chars: int = 3000, overlap: int = 200) -> list:
@@ -97,7 +107,10 @@ class LLMDetector:
     name = "llm"
 
     def __init__(self, model=DEFAULT_MODEL, url=DEFAULT_URL, labels=None, timeout=120,
-                 chunk_chars=3000, overlap=200, max_output_tokens=1024):
+                 chunk_chars=3000, overlap=200, max_output_tokens=1024, variant_check=None):
+        """variant_check(text, start, end) -> bool decides whether an occurrence
+        spelled differently from the model's answer ("priya" for "Priya") is
+        redacted. Pipeline.default() passes spaCy's NERDetector.is_name_like."""
         if not 0 <= overlap < chunk_chars // 2:
             raise ValueError("overlap must be smaller than half of chunk_chars")
         self.model = model
@@ -107,6 +120,7 @@ class LLMDetector:
         self.chunk_chars = chunk_chars
         self.overlap = overlap
         self.max_output_tokens = max_output_tokens
+        self.variant_check = variant_check or looks_like_name
 
     def _ask(self, text: str) -> list:
         body = {
@@ -147,6 +161,12 @@ class LLMDetector:
         # search the FULL text, so no per-chunk offsets are needed
         found = []
         for value, label in values:
-            for start, end in find_spans(text, value):   # hallucination guard
-                found.append(Entity(start, end, value, label, self.name, 0.8))
+            multi_word = len(value.split()) > 1
+            for start, end in find_spans(text, value, ignore_case=True):   # hallucination guard
+                match = text[start:end]
+                # The model's own spelling is always redacted. Other spellings only
+                # if they read as a name ("Will" the person, not "will" the verb).
+                # Multi-word values like "priya sharma" are never ordinary words.
+                if match == value or multi_word or self.variant_check(text, start, end):
+                    found.append(Entity(start, end, match, label, self.name, 0.8))
         return found
