@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from redactor.audit import AuditLog
-from redactor.detectors.llm_detector import LLMDetector, find_spans
+from redactor.detectors.llm_detector import LLMDetector, chunk_text, find_spans, parse_entities
 from redactor.detectors.regex_detector import RegexDetector, _V_D, _V_P, luhn_valid, verhoeff_valid
 from redactor.models import Entity
 from redactor.pipeline import Pipeline, merge
@@ -87,6 +87,57 @@ class LLMTests(unittest.TestCase):
         llm = FakeLLM([{"text": "Priya", "label": "PERSON"}])
         self.assertEqual(len(llm.detect("Priya said Priya would come.")), 2)
 
+    def test_parse_complete_reply(self):
+        reply = '{"entities":[{"text":"Ravi","label":"PERSON"}]}'
+        self.assertEqual(parse_entities(reply), [{"text": "Ravi", "label": "PERSON"}])
+
+    def test_parse_cut_off_reply_keeps_complete_items(self):
+        # what a repetition loop looks like when the output limit stops it
+        reply = ('{"entities":[{"text":"Meera Pillai","label":"PERSON"},'
+                 '{"text":"vendor contracts","label":"ORGANIZATION"},{"text":"vendor con')
+        self.assertEqual([i["text"] for i in parse_entities(reply)],
+                         ["Meera Pillai", "vendor contracts"])
+
+
+class ChunkTests(unittest.TestCase):
+    TEXT = "".join(f"Sentence {i} talks about budgets and plans. " for i in range(200))
+
+    def test_short_text_is_one_chunk(self):
+        self.assertEqual(chunk_text("hello", max_chars=100), ["hello"])
+
+    def test_chunks_fit_and_cover_everything(self):
+        chunks = chunk_text(self.TEXT, max_chars=500, overlap=50)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(c) <= 500 for c in chunks))
+        self.assertTrue(self.TEXT.startswith(chunks[0]) and self.TEXT.endswith(chunks[-1]))
+        # every character is in some chunk: consecutive chunks touch or overlap
+        pos = 0
+        for c in chunks:
+            start = self.TEXT.find(c, max(0, pos - 50))
+            self.assertLessEqual(start, pos)
+            pos = start + len(c)
+        self.assertEqual(pos, len(self.TEXT))
+
+    def test_cuts_at_sentence_end(self):
+        self.assertTrue(chunk_text(self.TEXT, max_chars=500, overlap=50)[0].endswith(". "))
+
+    def test_every_chunk_is_asked_and_spans_use_full_text(self):
+        seen = []
+
+        class RecordingLLM(LLMDetector):
+            def _ask(self, text):
+                seen.append(text)
+                return [{"text": "Vikram Singh", "label": "PERSON"}] if "Vikram" in text else []
+
+        text = self.TEXT + "Signed by Vikram Singh."
+        found = RecordingLLM(chunk_chars=500, overlap=50).detect(text)
+        self.assertGreater(len(seen), 1)
+        self.assertEqual([(e.start, e.end) for e in found], [(len(self.TEXT) + 10, len(text) - 1)])
+
+    def test_bad_overlap_rejected(self):
+        with self.assertRaises(ValueError):
+            LLMDetector(chunk_chars=100, overlap=60)
+
 
 class MergeAndRedactTests(unittest.TestCase):
     def test_longest_wins(self):
@@ -98,6 +149,17 @@ class MergeAndRedactTests(unittest.TestCase):
         a = Entity(0, 10, "9876543210", "PHONE", "regex")
         b = Entity(0, 10, "9876543210", "PERSON", "llm")
         self.assertEqual(merge([b, a]), [a])
+
+    def test_llm_label_beats_ner_on_tie(self):
+        # spaCy's small model tags "Ananya" as GPE (a place); the LLM says PERSON
+        ner = Entity(0, 6, "Ananya", "LOCATION", "ner", 0.7)
+        llm = Entity(0, 6, "Ananya", "PERSON", "llm", 0.8)
+        self.assertEqual(merge([ner, llm]), [llm])
+
+    def test_higher_score_wins_over_source_priority(self):
+        a = Entity(0, 5, "Priya", "PERSON", "regex", 0.5)
+        b = Entity(0, 5, "Priya", "PERSON", "custom", 0.9)
+        self.assertEqual(merge([a, b]), [b])
 
     def test_email_beats_name_inside_it(self):
         text = "write to priya@x.com"
