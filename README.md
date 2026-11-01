@@ -219,7 +219,7 @@ pii-redactor/
 | **Lazy optional imports** | `import spacy` inside `NERDetector.__init__` | The package works without heavy optional dependencies installed. |
 | **LLM as extractor, not editor** | `LLMDetector` + `find_spans()` | The model only *lists* strings in a forced JSON schema. Python finds them in the original text, and anything not found is discarded as a hallucination. The model can never rewrite or drop your text. |
 | **Edit by position** | `redact()` builds output from `text[cursor:e.start]` slices | Only the detected spans change. Unlike `str.replace`, "Ravi" is never hit inside "Ravindra". |
-| **Greedy interval selection** | `merge()` | Sort by (longest, most trusted source, position) and keep each span that doesn't overlap a kept one. When in doubt it redacts more, which is the safe direction. |
+| **Greedy interval selection** | `merge()` | Sort by (longest, highest score, source priority, position) and keep each span that doesn't overlap a kept one. When in doubt it redacts more, which is the safe direction. |
 | **Privacy by design** | `audit.py`, `.gitignore` | The log stores salted SHA-256 hashes, never values. Output files that contain PII (`*map*.json`, `*.redacted.txt`, the audit log) are ignored by git. |
 | **Test seam** | `LLMDetector._ask()` is separate from `detect()` | Tests override only the network call (`FakeLLM`), and all the real parsing and guard logic still runs. |
 
@@ -274,7 +274,7 @@ Things this project taught me, often by hitting the bug first:
 - **Small models can get stuck repeating themselves**, especially on repetitive text. Replies are capped (`max_output_tokens`) and the complete items are kept, but names in that chunk can be missed. In a 29k-character test, 8 of 10 names were found. A larger model (`--model`) helps.
 - **The LLM also over-flags**: on business text, `qwen2.5:1.5b` sometimes labels ordinary words ("budgets") as JOB_TITLE, and every occurrence then gets redacted.
 - **NER is English-only** with `en_core_web_sm`.
-- `score` is recorded but not yet used when merging (only span length and source priority are).
+- **spaCy's small English model mislabels many Indian names**: "Ananya" as a place, "Rohit" and "Kavita" as organisations. With the LLM on, its higher score wins the tie and the label is corrected to PERSON. With `--no-llm` the wrong labels stay (the text is still redacted), and some names, like "Priya", are missed.
 
 ---
 
@@ -285,7 +285,7 @@ cd pii-redactor
 python -m unittest -v
 ```
 
-22 tests cover the regex patterns and checksums, the LLM hallucination guard, chunking and cut-off replies, overlap merging, tag consistency and `restore()`, mask mode, and the audit log never containing raw values. Ollama and spaCy are not needed, because the LLM is replaced by a fake detector.
+24 tests cover the regex patterns and checksums, the LLM hallucination guard, chunking and cut-off replies, overlap merging, tag consistency and `restore()`, mask mode, and the audit log never containing raw values. Ollama and spaCy are not needed, because the LLM is replaced by a fake detector.
 
 ---
 
@@ -295,7 +295,8 @@ python -m unittest -v
 - [ ] `evals/run_eval.py`: precision and recall against a labelled sample set
 - [x] Chunking for long documents sent to the LLM
 - [ ] Case-insensitive matching for LLM-found values
-- [ ] Use `score` to resolve conflicts, and add a confidence threshold option
+- [x] Use `score` to resolve conflicts
+- [ ] A confidence threshold option
 - [ ] A `requirements.txt` / `pyproject.toml` for the optional extras
 
 ## License

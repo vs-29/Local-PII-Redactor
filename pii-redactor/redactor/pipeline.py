@@ -3,14 +3,20 @@ from .detectors.regex_detector import RegexDetector
 from .models import Entity, RedactionResult
 from .redact import redact
 
-# When two detections overlap and are the same length, trust the more
-# deterministic source.
-SOURCE_PRIORITY = {"regex": 0, "ner": 1, "llm": 2}
+# Last tie-breaker, for detections with the same length and score.
+# Same order as the default scores: regex 1.0 > llm 0.8 > ner 0.7.
+SOURCE_PRIORITY = {"regex": 0, "llm": 1, "ner": 2}
 
 
 def merge(entities: list) -> list:
-    """Resolve overlaps: longest span wins, then by source priority."""
-    candidates = sorted(set(entities), key=lambda e: (-len(e), SOURCE_PRIORITY.get(e.source, 9), e.start))
+    """Resolve overlaps: longest span wins, then higher score, then source priority.
+
+    The score matters for labels: spaCy's small English model often tags
+    Indian names as places or organisations, while the LLM (higher score)
+    reads the context and labels them PERSON.
+    """
+    candidates = sorted(set(entities), key=lambda e: (-len(e), -e.score,
+                                                      SOURCE_PRIORITY.get(e.source, 9), e.start))
     kept = []
     for e in candidates:
         if not any(e.overlaps(k) for k in kept):
